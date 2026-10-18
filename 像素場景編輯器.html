@@ -1,0 +1,195 @@
+<!DOCTYPE html>
+<html lang="zh-Hant">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<title>像素場景編輯器</title>
+<style>
+:root{color-scheme:light;--bg:#f4f1ea;--panel:#fff;--text:#2a2823;--muted:#6f6a5f;--line:#d9d3c5;--accent:#2f6fdd;--accent-t:#fff;--chk1:#e8e4d9;--chk2:#f7f5ef;box-sizing:border-box;padding-top:env(safe-area-inset-top,0px);padding-bottom:env(safe-area-inset-bottom,0px)}
+@media (prefers-color-scheme:dark){:root:not([data-theme="light"]){color-scheme:dark;--bg:#1c1b19;--panel:#262522;--text:#ece8de;--muted:#a09a8c;--line:#3d3b36;--accent:#6c9cf5;--accent-t:#10131a;--chk1:#33312d;--chk2:#2a2926}}
+:root[data-theme="dark"]{color-scheme:dark;--bg:#1c1b19;--panel:#262522;--text:#ece8de;--muted:#a09a8c;--line:#3d3b36;--accent:#6c9cf5;--accent-t:#10131a;--chk1:#33312d;--chk2:#2a2926}
+html{scroll-padding-top:env(safe-area-inset-top,0px)}
+*{box-sizing:border-box}
+body{margin:0;background:var(--bg);color:var(--text);font:15px/1.5 -apple-system,"Noto Sans TC","PingFang TC","Microsoft JhengHei",sans-serif}
+.wrap{display:flex;gap:28px;padding:24px;max-width:900px;margin:0 auto;flex-wrap:wrap;align-items:flex-start}
+.stage{flex:0 0 auto}
+canvas{touch-action:none;display:block;image-rendering:pixelated;border:2px solid var(--line);background:#000;max-width:100%}
+.zoom{margin-top:8px;color:var(--muted);font-size:13px}
+.panel{flex:1 1 280px;min-width:260px;display:flex;flex-direction:column;gap:12px}
+h1{font-size:20px;margin:0 0 2px}
+.hint{color:var(--muted);font-size:13px;margin:0}
+.card{background:var(--panel);border:1px solid var(--line);border-radius:10px;padding:12px}
+.head{display:flex;justify-content:space-between;align-items:center;gap:8px}
+.head b{font-weight:600}
+.cnt{color:var(--muted);font-size:13px}
+.row{display:flex;gap:8px;margin-top:8px;align-items:center}
+.btn{background:var(--accent);color:var(--accent-t);border:0;border-radius:7px;padding:6px 12px;font:inherit;cursor:pointer;display:inline-block}
+.btn.ghost{background:transparent;color:var(--muted);border:1px solid var(--line)}
+input[type=file]{display:none}
+.thumbs{display:flex;flex-wrap:wrap;gap:6px;margin-top:8px}
+.th{position:relative;width:40px;height:40px;border:1px solid var(--line);border-radius:5px;background:repeating-conic-gradient(var(--chk1) 0 25%,var(--chk2) 0 50%) 0 0/10px 10px}
+.th img{width:100%;height:100%;object-fit:contain;image-rendering:pixelated}
+.th button{position:absolute;top:-6px;right:-6px;width:16px;height:16px;border-radius:50%;border:0;background:var(--text);color:var(--bg);font-size:11px;line-height:16px;padding:0;cursor:pointer}
+</style>
+</head>
+<body>
+<div class="wrap">
+  <div class="stage">
+    <canvas id="c" width="120" height="400"></canvas>
+    <div class="zoom">倍率：<select id="z"><option value="1">1×</option><option value="2" selected>2×</option><option value="3">3×</option></select>（畫布 120×400）</div>
+  </div>
+  <div class="panel">
+    <div><h1>像素場景編輯器</h1><p class="hint">上傳後立即顯示在左側；有上限的項目超過時會取代最舊的一張。物件可直接在畫面上拖曳。</p></div>
+    <div id="cards"></div>
+  </div>
+</div>
+<script>
+const W=120,H=400,MINY=Math.floor(H/3);
+const cv=document.getElementById('c'),ctx=cv.getContext('2d');
+ctx.imageSmoothingEnabled=false;
+const S={bg:[],person:[],eyes:[],animal:[],object:[]};
+const CFG=[
+ {k:'bg',t:'1. 背景圖',max:1},
+ {k:'person',t:'2. 人物',max:1},
+ {k:'eyes',t:'3. 人物眼睛',max:1},
+ {k:'animal',t:'4. 動物',max:5},
+ {k:'object',t:'5. 物件',max:10}
+];
+const RANK={object:0,person:1,animal:2};
+
+// 天空與太陽（像素風）
+const sky=document.createElement('canvas');sky.width=W;sky.height=H;
+(function(){const g=sky.getContext('2d');
+ const bands=['#4fa3f0','#62b0f3','#76bcf5','#8bc8f7','#a1d3f9','#b8defb'];
+ const bh=Math.ceil(H/bands.length);
+ bands.forEach((c,i)=>{g.fillStyle=c;g.fillRect(0,i*bh,W,bh)});
+ const cx=90,cy=40,R=8,G=22;
+ for(let y=0;y<H;y++)for(let x=0;x<W;x++){const d=Math.hypot(x-cx,y-cy);
+  if(d<=R){g.fillStyle=d<=R-3?'#fff1a8':'#ffd93b';g.fillRect(x,y,1,1)}
+  else if(d<=R+G){const q=Math.ceil((1-(d-R)/G)*5)/5;g.fillStyle='rgba(255,244,180,'+(q*q*0.6)+')';g.fillRect(x,y,1,1)}}
+})();
+
+function load(file){return new Promise(res=>{
+ const url=URL.createObjectURL(file),img=new Image();
+ img.onload=()=>{
+  const s=Math.min(1,W/img.width,H/img.height);
+  const dw=Math.max(1,Math.round(img.width*s)),dh=Math.max(1,Math.round(img.height*s));
+  const o=document.createElement('canvas');o.width=dw;o.height=dh;
+  const g=o.getContext('2d');g.imageSmoothingEnabled=false;g.drawImage(img,0,0,dw,dh);
+  const d=g.getImageData(0,0,dw,dh).data;let bottom=dh-1;
+  outer:for(let y=dh-1;y>=0;y--){for(let x=0;x<dw;x++){if(d[(y*dw+x)*4+3]>10){bottom=y;break outer}}if(y===0)bottom=0}
+  res({img:o,url,w:dw,h:dh,bottom,data:d,fx:0,fy:0,tx:0,ty:0,wait:0});
+ };
+ img.src=url;
+})}
+
+function place(s){
+ const lo=Math.max(MINY,s.bottom);
+ s.fx=s.w/2+Math.random()*(W-s.w);
+ s.fy=lo+Math.random()*(H-1-lo);
+ s.tx=s.fx;s.ty=s.fy;s.wait=Math.random()*1.5;
+}
+function pick(s){
+ const lo=Math.max(MINY,s.bottom);
+ s.tx=s.w/2+Math.random()*(W-s.w);
+ s.ty=lo+Math.random()*(H-1-lo);
+}
+
+async function add(k,files){
+ const cfg=CFG.find(c=>c.k===k);
+ const list=[...files].filter(f=>f.type.startsWith('image/')).slice(-cfg.max);
+ for(const f of list){
+  const it=await load(f);
+  if(k!=='bg')place(it);
+  S[k].push(it);
+  while(S[k].length>cfg.max)S[k].shift();
+ }
+ renderUI();
+}
+
+function renderUI(){
+ const box=document.getElementById('cards');box.innerHTML='';
+ CFG.forEach(c=>{
+  const d=document.createElement('div');d.className='card';d.style.marginBottom='12px';
+  d.innerHTML=`<div class="head"><b>${c.t}</b><span class="cnt">${S[c.k].length}/${c.max}</span></div>`;
+  const row=document.createElement('div');row.className='row';
+  const id='f_'+c.k;
+  row.innerHTML=`<label class="btn" for="${id}">${c.max>1?'上傳圖片（可多選）':'上傳 / 取代'}</label><input id="${id}" type="file" accept="image/*" ${c.max>1?'multiple':''}>`;
+  const clr=document.createElement('button');clr.className='btn ghost';clr.textContent='清空';
+  clr.onclick=()=>{S[c.k]=[];renderUI()};row.appendChild(clr);
+  d.appendChild(row);
+  const th=document.createElement('div');th.className='thumbs';
+  S[c.k].forEach((it,i)=>{
+   const t=document.createElement('div');t.className='th';
+   t.innerHTML=`<img src="${it.url}" alt=""><button title="移除">×</button>`;
+   t.querySelector('button').onclick=()=>{S[c.k].splice(i,1);renderUI()};
+   th.appendChild(t);
+  });
+  d.appendChild(th);
+  box.appendChild(d);
+  d.querySelector('input').onchange=e=>{add(c.k,e.target.files);e.target.value=''};
+ });
+}
+
+function step(s,dt){
+ if(s.wait>0){s.wait-=dt;return}
+ const dx=s.tx-s.fx,dy=s.ty-s.fy,dist=Math.hypot(dx,dy);
+ if(dist<1){s.wait=0.5+Math.random()*2.5;pick(s);return}
+ const v=Math.min(dist,18*dt);
+ s.fx+=dx/dist*v;s.fy+=dy/dist*v;
+}
+
+let lastItems=[],nextBlink=0,blinkEnd=0;
+function blinking(t){
+ if(t>=nextBlink){blinkEnd=t+140;nextBlink=t+2500+Math.random()*3500;if(Math.random()<.2)nextBlink=blinkEnd+220}
+ return t<blinkEnd}
+let last=performance.now();
+function frame(now){
+ const dt=Math.min(0.1,(now-last)/1000);last=now;
+ if(S.person[0])step(S.person[0],dt);
+ S.animal.forEach(a=>step(a,dt));
+
+ ctx.clearRect(0,0,W,H);
+ ctx.drawImage(sky,0,0);
+ if(S.bg[0])ctx.drawImage(S.bg[0].img,0,0,W,H);
+
+ const items=[];
+ S.object.forEach(o=>items.push({k:'object',s:o}));
+ S.animal.forEach(a=>items.push({k:'animal',s:a}));
+ if(S.person[0])items.push({k:'person',s:S.person[0]});
+ // 以「最底下一格像素」所在的畫面列決定前後；相同時 物件 < 人物 < 動物
+ items.sort((a,b)=>{
+  const da=Math.round(a.s.fy),db=Math.round(b.s.fy);
+  return da-db||RANK[a.k]-RANK[b.k];
+ });
+ items.forEach(({k,s})=>{
+  const x=Math.round(s.fx-s.w/2),y=Math.round(s.fy-s.bottom);
+  ctx.drawImage(s.img,x,y);
+  if(k==='person'&&S.eyes[0]&&!blinking(now))ctx.drawImage(S.eyes[0].img,x,y);
+ });
+ lastItems=items;
+ requestAnimationFrame(frame);
+}
+let drag=null;
+function pt(e){const r=cv.getBoundingClientRect();return[(e.clientX-r.left)*W/r.width,(e.clientY-r.top)*H/r.height]}
+function hit(px,py){
+ for(let i=lastItems.length-1;i>=0;i--){const {k,s}=lastItems[i];if(k!=='object')continue;
+  const lx=Math.floor(px-Math.round(s.fx-s.w/2)),ly=Math.floor(py-Math.round(s.fy-s.bottom));
+  if(lx>=0&&ly>=0&&lx<s.w&&ly<s.h&&s.data[(ly*s.w+lx)*4+3]>10)return s}
+ return null}
+cv.addEventListener('pointerdown',e=>{const[px,py]=pt(e),s=hit(px,py);if(!s)return;
+ drag={s,ox:px-s.fx,oy:py-s.fy};cv.setPointerCapture(e.pointerId);cv.style.cursor='grabbing';e.preventDefault()});
+cv.addEventListener('pointermove',e=>{const[px,py]=pt(e);
+ if(drag){const s=drag.s;s.fx=Math.min(W-s.w/2,Math.max(s.w/2,px-drag.ox));s.fy=Math.min(H-1,Math.max(s.bottom,py-drag.oy))}
+ else cv.style.cursor=hit(px,py)?'grab':'default'});
+const endDrag=()=>{drag=null;cv.style.cursor='default'};
+cv.addEventListener('pointerup',endDrag);cv.addEventListener('pointercancel',endDrag);
+document.getElementById('z').onchange=e=>{
+ const z=+e.target.value;cv.style.width=W*z+'px';cv.style.height=H*z+'px';
+};
+cv.style.width=W*2+'px';cv.style.height=H*2+'px';
+renderUI();
+requestAnimationFrame(frame);
+</script>
+</body>
+</html>
